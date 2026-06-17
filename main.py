@@ -183,6 +183,8 @@ def triage_task(task, today):
     if target and sec == SEC_NEW:
         move_to_section(gid, target)
         actions.append("routed")
+        if priority == PRI_URGENT:   # one-time ping the moment an Urgent ticket lands
+            notify_slack(f"🔴 URGENT ticket: *{task['name']}* — routed, same-day SLA.")
 
     # Fill blanks only — never overwrite human-set values.
     updates = {}
@@ -206,25 +208,43 @@ def triage_task(task, today):
 def run_sweep():
     today = date.today()
     tasks = fetch_open_tasks()
-    changed, urgent, errors = [], [], []
+    changed, errors = [], []
     for t in tasks:
         try:
-            line = triage_task(t, today)
+            line = triage_task(t, today)   # Urgent pings happen here, once, on routing
             if line:
                 changed.append(line)
-        except Exception as e:                 # one bad ticket must never stop the rest
+        except Exception as e:             # one bad ticket must never stop the rest
             errors.append(f"{t.get('name', '?')[:40]}: {e}")
-        if (enum_gid(t, F_PRIORITY) == PRI_URGENT
-                and enum_gid(t, F_STATUS) != ST_RESOLVED):
-            urgent.append(t["name"])
-    if urgent:
-        notify_slack("🔴 Urgent People & Ops tickets open:\n• " + "\n• ".join(urgent))
     if errors:
         notify_slack("⚠️ People & Ops triage hit per-ticket errors:\n• " + "\n• ".join(errors))
     summary = {"scanned": len(tasks), "changed": len(changed),
                "errors": len(errors), "details": changed, "error_details": errors}
     print(json.dumps(summary))
     return summary
+
+
+def digest_run():
+    """Once-a-day summary of open Urgent + overdue tickets. Triggered via ?mode=digest."""
+    today = date.today()
+    iso = today.isoformat()
+    urgent_open, overdue = [], []
+    for t in fetch_open_tasks():
+        if enum_gid(t, F_STATUS) == ST_RESOLVED:
+            continue
+        if enum_gid(t, F_PRIORITY) == PRI_URGENT:
+            urgent_open.append(t["name"])
+        due = t.get("due_on")
+        if due and due < iso:
+            overdue.append(f"{t['name']} (due {due})")
+    blocks = []
+    if urgent_open:
+        blocks.append("🔴 *Open Urgent:*\n• " + "\n• ".join(urgent_open))
+    if overdue:
+        blocks.append("⏰ *Overdue:*\n• " + "\n• ".join(overdue))
+    body = "\n\n".join(blocks) if blocks else "All clear — nothing urgent or overdue. ✅"
+    notify_slack("📋 *People & Ops Hub — daily digest*\n" + body)
+    return {"urgent_open": len(urgent_open), "overdue": len(overdue)}
 
 
 def config_check():
@@ -288,11 +308,15 @@ def triage(request):
     if secret:
         return ("", 200, {"X-Hook-Secret": secret})
 
+    mode = request.args.get("mode")
     # Config self-check mode: ?mode=selfcheck → validate all GIDs, alert on drift.
-    if request.args.get("mode") == "selfcheck":
+    if mode == "selfcheck":
         report = config_check()
         return (json.dumps(report), 200 if report["ok"] else 409,
                 {"Content-Type": "application/json"})
+    # Daily digest mode: ?mode=digest → Slack summary of open Urgent + overdue.
+    if mode == "digest":
+        return (json.dumps(digest_run()), 200, {"Content-Type": "application/json"})
 
     # Normal triage run. Any uncaught failure → alert + HTTP 500 so the failure is
     # VISIBLE (Cloud Scheduler marks the job failed; Cloud Monitoring can alert).

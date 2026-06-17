@@ -98,9 +98,42 @@ def test_sweep_isolates_one_bad_ticket():
         if t["name"] == "bad":
             raise RuntimeError("boom")
         return "good: routed"
+    original = m.triage_task
     m.triage_task = _flaky
-    s = m.run_sweep()
+    try:
+        s = m.run_sweep()
+    finally:
+        m.triage_task = original   # restore so later tests use the real function
     assert s["scanned"] == 2 and s["changed"] == 1 and s["errors"] == 1, s
+
+
+def test_urgent_ping_on_route():
+    pings = []
+    m.notify_slack = lambda msg: pings.append(msg)
+    m.move_to_section = lambda g, s: None
+    m.update_task = lambda g, f: None
+    m.triage_task(_task(cat=m.CAT_IT, pri=m.PRI_URGENT, section=m.SEC_NEW),
+                  datetime.date(2026, 6, 17))
+    assert len(pings) == 1 and "URGENT" in pings[0], pings
+    # already-routed urgent ticket (not in New) must NOT re-ping
+    pings.clear()
+    m.triage_task(_task(cat=m.CAT_IT, pri=m.PRI_URGENT, section=m.SEC_IT,
+                        assignee=m.OWNER_GID, due="2026-06-17", status=m.ST_NEW),
+                  datetime.date(2026, 6, 17))
+    assert pings == [], pings
+
+
+def test_digest_lists_urgent_and_overdue():
+    msgs = []
+    m.notify_slack = lambda msg: msgs.append(msg)
+    m.fetch_open_tasks = lambda: [
+        _task(name="urgent one", pri=m.PRI_URGENT, section=m.SEC_IT),
+        _task(name="late one", pri=m.PRI_MED, section=m.SEC_HR, due="2026-06-01"),
+        _task(name="resolved", status=m.ST_RESOLVED, section=m.SEC_RESOLVED),
+    ]
+    r = m.digest_run()
+    assert r["urgent_open"] == 1 and r["overdue"] == 1, r
+    assert "urgent one" in msgs[0] and "late one" in msgs[0]
 
 
 if __name__ == "__main__":
