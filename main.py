@@ -206,19 +206,63 @@ def triage_task(task, today):
 def run_sweep():
     today = date.today()
     tasks = fetch_open_tasks()
-    changed, urgent = [], []
+    changed, urgent, errors = [], [], []
     for t in tasks:
-        line = triage_task(t, today)
-        if line:
-            changed.append(line)
+        try:
+            line = triage_task(t, today)
+            if line:
+                changed.append(line)
+        except Exception as e:                 # one bad ticket must never stop the rest
+            errors.append(f"{t.get('name', '?')[:40]}: {e}")
         if (enum_gid(t, F_PRIORITY) == PRI_URGENT
-                and enum_gid(t, F_STATUS) not in (ST_RESOLVED,)):
+                and enum_gid(t, F_STATUS) != ST_RESOLVED):
             urgent.append(t["name"])
     if urgent:
         notify_slack("🔴 Urgent People & Ops tickets open:\n• " + "\n• ".join(urgent))
-    summary = {"scanned": len(tasks), "changed": len(changed), "details": changed}
+    if errors:
+        notify_slack("⚠️ People & Ops triage hit per-ticket errors:\n• " + "\n• ".join(errors))
+    summary = {"scanned": len(tasks), "changed": len(changed),
+               "errors": len(errors), "details": changed, "error_details": errors}
     print(json.dumps(summary))
     return summary
+
+
+def config_check():
+    """Verify every hard-coded section/field/option GID still exists on the board.
+    Cheap — run it via ?mode=selfcheck after any change to the board structure."""
+    problems = []
+    live_secs = {s["gid"] for s in _asana("GET", f"/projects/{PROJECT_GID}/sections")["data"]}
+    expected = {"New": SEC_NEW, "Quinyx": SEC_QUINYX, "IT": SEC_IT, "HR": SEC_HR,
+                "Hiring": SEC_HIRING, "Contract": SEC_CONTRACT,
+                "Waiting": SEC_WAITING, "Resolved": SEC_RESOLVED}
+    if SEC_JOB_ORG:
+        expected["JobOrg"] = SEC_JOB_ORG
+    for name, gid in expected.items():
+        if gid not in live_secs:
+            problems.append(f"section missing: {name} ({gid})")
+
+    cfs = _asana("GET", f"/projects/{PROJECT_GID}?opt_fields="
+                 "custom_field_settings.custom_field.gid,"
+                 "custom_field_settings.custom_field.enum_options.gid")
+    fields = {}
+    for s in cfs["data"].get("custom_field_settings", []):
+        cf = s["custom_field"]
+        fields[cf["gid"]] = {o["gid"] for o in cf.get("enum_options", [])}
+    for fname, fgid, opts in [
+        ("Category", F_CATEGORY, [CAT_QUINYX, CAT_IT, CAT_HR, CAT_HIRING, CAT_CONTRACT, CAT_JOBORG, CAT_OTHER]),
+        ("Priority", F_PRIORITY, [PRI_LOW, PRI_MED, PRI_HIGH, PRI_URGENT]),
+        ("Status",   F_STATUS,   [ST_NEW, ST_INPROG, ST_WAITING, ST_RESOLVED]),
+    ]:
+        if fgid not in fields:
+            problems.append(f"field missing: {fname} ({fgid})")
+            continue
+        for o in opts:
+            if o not in fields[fgid]:
+                problems.append(f"{fname}: option {o} missing")
+
+    if problems:
+        notify_slack("⚠️ People & Ops triage CONFIG DRIFT detected:\n• " + "\n• ".join(problems))
+    return {"ok": not problems, "problems": problems}
 
 
 # ── Optional Slack ping ───────────────────────────────────────────────────────
@@ -243,5 +287,20 @@ def triage(request):
     secret = request.headers.get("X-Hook-Secret")
     if secret:
         return ("", 200, {"X-Hook-Secret": secret})
-    summary = run_sweep()
-    return (json.dumps(summary), 200, {"Content-Type": "application/json"})
+
+    # Config self-check mode: ?mode=selfcheck → validate all GIDs, alert on drift.
+    if request.args.get("mode") == "selfcheck":
+        report = config_check()
+        return (json.dumps(report), 200 if report["ok"] else 409,
+                {"Content-Type": "application/json"})
+
+    # Normal triage run. Any uncaught failure → alert + HTTP 500 so the failure is
+    # VISIBLE (Cloud Scheduler marks the job failed; Cloud Monitoring can alert).
+    try:
+        summary = run_sweep()
+        return (json.dumps(summary), 200, {"Content-Type": "application/json"})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        notify_slack(f"🚨 People & Ops triage RUN FAILED: {e}")
+        return (json.dumps({"error": str(e)}), 500, {"Content-Type": "application/json"})
