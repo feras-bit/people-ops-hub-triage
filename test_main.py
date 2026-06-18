@@ -108,11 +108,36 @@ def test_sweep_isolates_one_bad_ticket():
     assert s["scanned"] == 2 and s["changed"] == 1 and s["errors"] == 1, s
 
 
+def test_adds_requester_as_follower():
+    followers = []
+    m.move_to_section = lambda g, s: None
+    m.update_task = lambda g, f: None
+    m.notify_slack = lambda *_: None
+    m.add_followers = lambda g, fl: followers.append((g, fl))
+    m.triage_task(_task(cat=m.CAT_IT, pri=m.PRI_MED, section=m.SEC_NEW,
+                        requester="sam@lap.coffee"), datetime.date(2026, 6, 17))
+    assert followers == [("1", ["sam@lap.coffee"])], followers
+
+
+def test_follower_add_failure_is_swallowed():
+    m.move_to_section = lambda g, s: None
+    m.update_task = lambda g, f: None
+    m.notify_slack = lambda *_: None
+
+    def _boom(g, fl):
+        raise RuntimeError("not a workspace member")
+    m.add_followers = _boom
+    # must not raise even though add_followers blows up
+    m.triage_task(_task(cat=m.CAT_IT, pri=m.PRI_MED, section=m.SEC_NEW,
+                        requester="ext@nope.com"), datetime.date(2026, 6, 17))
+
+
 def test_urgent_ping_on_route():
     pings = []
     m.notify_slack = lambda msg: pings.append(msg)
     m.move_to_section = lambda g, s: None
     m.update_task = lambda g, f: None
+    m.add_followers = lambda g, fl: None   # requester is set below → would be called
     m.triage_task(_task(cat=m.CAT_IT, pri=m.PRI_URGENT, section=m.SEC_NEW,
                         requester="anna@lap.coffee"),
                   datetime.date(2026, 6, 17))

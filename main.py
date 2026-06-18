@@ -141,6 +141,12 @@ def update_task(task_gid, fields):
     _asana("PUT", f"/tasks/{task_gid}", fields)
 
 
+def add_followers(task_gid, followers):
+    """Add collaborators by email or GID. Asana resolves a workspace member's
+    email to their account; non-members raise (caller swallows it)."""
+    _asana("POST", f"/tasks/{task_gid}/addFollowers", {"followers": followers})
+
+
 # ── Business-day SLA ──────────────────────────────────────────────────────────
 
 def add_business_days(start, n):
@@ -157,12 +163,13 @@ def add_business_days(start, n):
 
 def triage_task(task, today):
     """Return a short log line if anything changed, else None."""
-    gid      = task["gid"]
-    sec      = current_section(task)
-    cat      = enum_gid(task, F_CATEGORY)
-    status   = enum_gid(task, F_STATUS)
-    priority = enum_gid(task, F_PRIORITY)
-    actions  = []
+    gid       = task["gid"]
+    sec       = current_section(task)
+    cat       = enum_gid(task, F_CATEGORY)
+    status    = enum_gid(task, F_STATUS)
+    priority  = enum_gid(task, F_PRIORITY)
+    requester = text_value(task, F_REQUESTER)
+    actions   = []
 
     # 1. Lifecycle takes precedence over routing.
     if status == ST_RESOLVED:
@@ -191,9 +198,14 @@ def triage_task(task, today):
     if target and sec == SEC_NEW:
         move_to_section(gid, target)
         actions.append("routed")
+        if requester:                # add the submitter as a collaborator so they
+            try:                     # see status updates natively (workspace members)
+                add_followers(gid, [requester])
+                actions.append("requester+")
+            except Exception:        # non-member / invalid email → skip silently
+                pass
         if priority == PRI_URGENT:   # one-time ping the moment an Urgent ticket lands
-            who = text_value(task, F_REQUESTER)
-            frm = f" — from {who}" if who else ""
+            frm = f" — from {requester}" if requester else ""
             notify_slack(f"🔴 URGENT ticket: *{task['name']}*{frm} — routed, same-day SLA.")
 
     # Fill blanks only — never overwrite human-set values.
