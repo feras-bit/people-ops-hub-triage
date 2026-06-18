@@ -47,9 +47,10 @@ SEC_RESOLVED = "1215627439831358"  # ✅ Resolved / Done
 SEC_JOB_ORG  = os.environ.get("SEC_JOB_ORG", "")  # 🏢 Job & Org Change — fill once the lane exists
 
 # Custom fields
-F_CATEGORY = "1215681186120906"
-F_PRIORITY = "1215688982374676"
-F_STATUS   = "1215688982374682"
+F_CATEGORY  = "1215681186120906"
+F_PRIORITY  = "1215688982374676"
+F_STATUS    = "1215688982374682"
+F_REQUESTER = "1215796488510173"   # "Requester email" (text)
 
 # Category options → target lane
 CAT_QUINYX, CAT_JOBORG, CAT_IT  = "1215681186120907", "1215681186120908", "1215681186120909"
@@ -100,7 +101,7 @@ def fetch_open_tasks():
     """Incomplete tasks in the project with the fields we triage on."""
     opt = ("memberships.section.gid,memberships.project.gid,assignee.gid,"
            "due_on,completed,name,"
-           "custom_fields.gid,custom_fields.enum_value.gid")
+           "custom_fields.gid,custom_fields.enum_value.gid,custom_fields.text_value")
     tasks, url = [], f"{ASANA_BASE}/tasks?project={PROJECT_GID}&completed_since=now&opt_fields={opt}&limit=100"
     while url:
         resp = _asana("GET", url)
@@ -115,6 +116,13 @@ def enum_gid(task, field_gid):
         if cf.get("gid") == field_gid:
             ev = cf.get("enum_value")
             return ev.get("gid") if ev else None
+    return None
+
+
+def text_value(task, field_gid):
+    for cf in task.get("custom_fields", []):
+        if cf.get("gid") == field_gid:
+            return cf.get("text_value")
     return None
 
 
@@ -184,7 +192,9 @@ def triage_task(task, today):
         move_to_section(gid, target)
         actions.append("routed")
         if priority == PRI_URGENT:   # one-time ping the moment an Urgent ticket lands
-            notify_slack(f"🔴 URGENT ticket: *{task['name']}* — routed, same-day SLA.")
+            who = text_value(task, F_REQUESTER)
+            frm = f" — from {who}" if who else ""
+            notify_slack(f"🔴 URGENT ticket: *{task['name']}*{frm} — routed, same-day SLA.")
 
     # Fill blanks only — never overwrite human-set values.
     updates = {}
@@ -232,11 +242,13 @@ def digest_run():
     for t in fetch_open_tasks():
         if enum_gid(t, F_STATUS) == ST_RESOLVED:
             continue
+        who = text_value(t, F_REQUESTER)
+        tag = f" — {who}" if who else ""
         if enum_gid(t, F_PRIORITY) == PRI_URGENT:
-            urgent_open.append(t["name"])
+            urgent_open.append(t["name"] + tag)
         due = t.get("due_on")
         if due and due < iso:
-            overdue.append(f"{t['name']} (due {due})")
+            overdue.append(f"{t['name']} (due {due}){tag}")
     blocks = []
     if urgent_open:
         blocks.append("🔴 *Open Urgent:*\n• " + "\n• ".join(urgent_open))

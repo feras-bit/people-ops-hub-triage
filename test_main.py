@@ -19,14 +19,15 @@ os.environ.setdefault("SEC_JOB_ORG", "JOBORG_SEC")  # so Job&Org routing is test
 import main as m  # noqa: E402
 
 
-def _task(cat=None, pri=None, status=None, section=None,
-          assignee=None, due=None, completed=False, name="t", gid="1"):
+def _task(cat=None, pri=None, status=None, section=None, assignee=None,
+          due=None, completed=False, name="t", gid="1", requester=None):
     cfs = []
     if cat is not None:
         cfs.append({"gid": m.F_CATEGORY, "enum_value": {"gid": cat}})
     if pri is not None:
         cfs.append({"gid": m.F_PRIORITY, "enum_value": {"gid": pri}})
     cfs.append({"gid": m.F_STATUS, "enum_value": ({"gid": status} if status else None)})
+    cfs.append({"gid": m.F_REQUESTER, "text_value": requester})
     return {"gid": gid, "name": name, "completed": completed,
             "assignee": ({"gid": assignee} if assignee else None), "due_on": due,
             "memberships": [{"project": {"gid": m.PROJECT_GID},
@@ -112,9 +113,11 @@ def test_urgent_ping_on_route():
     m.notify_slack = lambda msg: pings.append(msg)
     m.move_to_section = lambda g, s: None
     m.update_task = lambda g, f: None
-    m.triage_task(_task(cat=m.CAT_IT, pri=m.PRI_URGENT, section=m.SEC_NEW),
+    m.triage_task(_task(cat=m.CAT_IT, pri=m.PRI_URGENT, section=m.SEC_NEW,
+                        requester="anna@lap.coffee"),
                   datetime.date(2026, 6, 17))
     assert len(pings) == 1 and "URGENT" in pings[0], pings
+    assert "anna@lap.coffee" in pings[0], pings   # requester shown in the ping
     # already-routed urgent ticket (not in New) must NOT re-ping
     pings.clear()
     m.triage_task(_task(cat=m.CAT_IT, pri=m.PRI_URGENT, section=m.SEC_IT,
@@ -127,13 +130,14 @@ def test_digest_lists_urgent_and_overdue():
     msgs = []
     m.notify_slack = lambda msg: msgs.append(msg)
     m.fetch_open_tasks = lambda: [
-        _task(name="urgent one", pri=m.PRI_URGENT, section=m.SEC_IT),
+        _task(name="urgent one", pri=m.PRI_URGENT, section=m.SEC_IT, requester="bob@lap.coffee"),
         _task(name="late one", pri=m.PRI_MED, section=m.SEC_HR, due="2026-06-01"),
         _task(name="resolved", status=m.ST_RESOLVED, section=m.SEC_RESOLVED),
     ]
     r = m.digest_run()
     assert r["urgent_open"] == 1 and r["overdue"] == 1, r
     assert "urgent one" in msgs[0] and "late one" in msgs[0]
+    assert "bob@lap.coffee" in msgs[0], msgs   # requester shown in digest
 
 
 if __name__ == "__main__":
