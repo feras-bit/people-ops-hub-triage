@@ -51,6 +51,8 @@ F_CATEGORY  = "1215681186120906"
 F_PRIORITY  = "1215688982374676"
 F_STATUS    = "1215688982374682"
 F_REQUESTER = "1215796488510173"   # "Requester email" (text)
+F_SUBCAT    = "1215681186120915"
+SUB_PAYROLL = "1215688982374659"   # Sub-category "HR · Payroll question"
 
 # Category options → target lane
 CAT_QUINYX, CAT_JOBORG, CAT_IT  = "1215681186120907", "1215681186120908", "1215681186120909"
@@ -210,7 +212,10 @@ def triage_task(task, today):
 
     # Fill blanks only — never overwrite human-set values.
     updates = {}
-    if task.get("assignee") is None:
+    # HR questions are worked by the HR team off the lane (left unassigned);
+    # Payroll (an HR sub-type) and every other category go to the owner.
+    hr_team_pickup = (cat == CAT_HR and enum_gid(task, F_SUBCAT) != SUB_PAYROLL)
+    if task.get("assignee") is None and not hr_team_pickup:
         updates["assignee"] = OWNER_GID
         actions.append("assigned")
     if status is None:

@@ -20,12 +20,14 @@ import main as m  # noqa: E402
 
 
 def _task(cat=None, pri=None, status=None, section=None, assignee=None,
-          due=None, completed=False, name="t", gid="1", requester=None):
+          due=None, completed=False, name="t", gid="1", requester=None, subcat=None):
     cfs = []
     if cat is not None:
         cfs.append({"gid": m.F_CATEGORY, "enum_value": {"gid": cat}})
     if pri is not None:
         cfs.append({"gid": m.F_PRIORITY, "enum_value": {"gid": pri}})
+    if subcat is not None:
+        cfs.append({"gid": m.F_SUBCAT, "enum_value": {"gid": subcat}})
     cfs.append({"gid": m.F_STATUS, "enum_value": ({"gid": status} if status else None)})
     cfs.append({"gid": m.F_REQUESTER, "text_value": requester})
     return {"gid": gid, "name": name, "completed": completed,
@@ -63,6 +65,28 @@ def test_routes_and_fills_blanks():
     assert fields["assignee"] == m.OWNER_GID
     assert fields["custom_fields"][m.F_STATUS] == m.ST_NEW
     assert fields["due_on"] == "2026-06-19"
+
+
+def test_hr_unassigned_payroll_assigned():
+    seen = []
+    m.move_to_section = lambda g, s: None
+    m.update_task = lambda g, f: seen.append(f)
+    m.notify_slack = lambda *_: None
+    m.add_followers = lambda g, fl: None
+    today = datetime.date(2026, 6, 17)
+    # plain HR question -> NOT assigned (team picks it up from the lane)
+    seen.clear()
+    m.triage_task(_task(cat=m.CAT_HR, pri=m.PRI_MED, section=m.SEC_NEW), today)
+    assert all("assignee" not in u for u in seen), seen
+    # HR + Payroll sub-type -> assigned to the owner
+    seen.clear()
+    m.triage_task(_task(cat=m.CAT_HR, pri=m.PRI_MED, section=m.SEC_NEW,
+                        subcat=m.SUB_PAYROLL), today)
+    assert any(u.get("assignee") == m.OWNER_GID for u in seen), seen
+    # non-HR (IT) -> assigned to the owner as before
+    seen.clear()
+    m.triage_task(_task(cat=m.CAT_IT, pri=m.PRI_MED, section=m.SEC_NEW), today)
+    assert any(u.get("assignee") == m.OWNER_GID for u in seen), seen
 
 
 def test_other_is_left_alone():
