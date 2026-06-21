@@ -47,6 +47,20 @@ function asana_(method, path, payload) {
   return JSON.parse(res.getContentText());
 }
 
+// Upload a file Blob to an Asana task as an attachment (multipart form).
+function uploadAttachment_(taskGid, blob) {
+  var res = UrlFetchApp.fetch(ASANA_BASE + '/attachments', {
+    method: 'post',
+    headers: { Authorization: 'Bearer ' + token_() },
+    payload: { parent: taskGid, file: blob },   // object w/ Blob → multipart/form-data
+    muteHttpExceptions: true
+  });
+  var code = res.getResponseCode();
+  if (code < 200 || code >= 300) {
+    throw new Error('attachment -> ' + code + ': ' + res.getContentText());
+  }
+}
+
 function emailOf_(from) {
   var m = from.match(/<([^>]+)>/);
   return (m ? m[1] : from).trim().toLowerCase();
@@ -87,6 +101,13 @@ function processInbox() {
       var task = asana_('POST', '/tasks',
         { name: subject, notes: notes, projects: [PROJECT], custom_fields: cf });
       asana_('POST', '/sections/' + SEC_NEW + '/addTask', { task: task.data.gid });
+
+      // carry over real document attachments (skip inline signature images)
+      var atts = msg.getAttachments({ includeInlineImages: false });
+      for (var a = 0; a < atts.length; a++) {
+        try { uploadAttachment_(task.data.gid, atts[a]); }
+        catch (ae) { Logger.log('attachment failed: ' + ae); }
+      }
 
       thread.addLabel(label);
       thread.markRead();
